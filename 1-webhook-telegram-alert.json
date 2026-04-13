@@ -1,0 +1,122 @@
+{
+  "name": "Webhook → Process → Telegram Alert",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "incoming-data",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-1",
+      "name": "Webhook Receiver",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [240, 300],
+      "webhookId": "incoming-data"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Process incoming webhook data\nconst items = $input.all();\nconst results = [];\n\nfor (const item of items) {\n  const data = item.json.body || item.json;\n  \n  // Extract and normalize fields\n  const event = data.event || 'unknown';\n  const source = data.source || 'webhook';\n  const message = data.message || JSON.stringify(data);\n  const severity = data.severity || 'info';\n  const timestamp = new Date().toISOString();\n  \n  // Add severity emoji\n  const severityEmoji = {\n    'critical': '🔴',\n    'high': '🟠',\n    'medium': '🟡',\n    'low': '🟢',\n    'info': 'ℹ️'\n  }[severity.toLowerCase()] || 'ℹ️';\n  \n  results.push({\n    json: {\n      event,\n      source,\n      message,\n      severity,\n      timestamp,\n      severityEmoji,\n      telegramMessage: `${severityEmoji} <b>${event}</b>\\n\\nSource: ${source}\\nSeverity: ${severity}\\nTime: ${timestamp}\\n\\n${message}`\n    }\n  });\n}\n\nreturn results;"
+      },
+      "id": "code-1",
+      "name": "Process Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [460, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "filter-severity",
+              "leftValue": "={{ $json.severity }}",
+              "rightValue": "info",
+              "operator": {
+                "type": "string",
+                "operation": "notEquals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "filter-1",
+      "name": "Filter (skip info level)",
+      "type": "n8n-nodes-base.filter",
+      "typeVersion": 2,
+      "position": [680, 300]
+    },
+    {
+      "parameters": {
+        "operation": "sendMessage",
+        "chatId": "={{ $env.TELEGRAM_CHAT_ID || '8611859807' }}",
+        "text": "={{ $json.telegramMessage }}",
+        "additionalFields": {
+          "parse_mode": "HTML"
+        }
+      },
+      "id": "telegram-1",
+      "name": "Send Telegram Alert",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [900, 300],
+      "credentials": {
+        "telegramApi": {
+          "id": "telegram-cred",
+          "name": "Telegram Bot"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ status: 'received', event: $json.event, timestamp: $json.timestamp }) }}"
+      },
+      "id": "respond-1",
+      "name": "Respond OK",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [900, 500]
+    }
+  ],
+  "connections": {
+    "Webhook Receiver": {
+      "main": [
+        [
+          { "node": "Process Data", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Process Data": {
+      "main": [
+        [
+          { "node": "Filter (skip info level)", "type": "main", "index": 0 },
+          { "node": "Respond OK", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Filter (skip info level)": {
+      "main": [
+        [
+          { "node": "Send Telegram Alert", "type": "main", "index": 0 }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "tags": [
+    { "name": "webhook" },
+    { "name": "telegram" },
+    { "name": "alerting" }
+  ]
+}

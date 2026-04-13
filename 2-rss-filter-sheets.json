@@ -1,0 +1,138 @@
+{
+  "name": "RSS Monitor → Filter Keywords → Google Sheets",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            { "field": "minutes", "minutesInterval": 15 }
+          ]
+        }
+      },
+      "id": "schedule-1",
+      "name": "Every 15 Minutes",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [240, 300]
+    },
+    {
+      "parameters": {
+        "url": "https://hnrss.org/newest?q=python+OR+typescript+OR+automation",
+        "options": {}
+      },
+      "id": "rss-1",
+      "name": "Read HN RSS",
+      "type": "n8n-nodes-base.rssFeedRead",
+      "typeVersion": 1.1,
+      "position": [460, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Filter RSS items by keywords and extract clean data\nconst keywords = ['python', 'typescript', 'n8n', 'automation', 'api', 'claude', 'llm', 'react native', 'freelance', 'bot'];\n\nconst items = $input.all();\nconst results = [];\n\nfor (const item of items) {\n  const title = (item.json.title || '').toLowerCase();\n  const content = (item.json.contentSnippet || item.json.content || '').toLowerCase();\n  const searchText = `${title} ${content}`;\n  \n  const matchedKeywords = keywords.filter(kw => searchText.includes(kw));\n  \n  if (matchedKeywords.length > 0) {\n    results.push({\n      json: {\n        title: item.json.title || '',\n        link: item.json.link || '',\n        published: item.json.pubDate || item.json.isoDate || new Date().toISOString(),\n        matchedKeywords: matchedKeywords.join(', '),\n        keywordCount: matchedKeywords.length,\n        source: 'Hacker News',\n        scannedAt: new Date().toISOString()\n      }\n    });\n  }\n}\n\n// Sort by keyword match count (most relevant first)\nresults.sort((a, b) => b.json.keywordCount - a.json.keywordCount);\n\nreturn results.length > 0 ? results : [{ json: { _skip: true } }];"
+      },
+      "id": "code-2",
+      "name": "Filter by Keywords",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [680, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "filter-skip",
+              "leftValue": "={{ $json._skip }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "notTrue"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "filter-2",
+      "name": "Has Matches?",
+      "type": "n8n-nodes-base.filter",
+      "typeVersion": 2,
+      "position": [900, 300]
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "mode": "list",
+          "value": ""
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "list",
+          "value": ""
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {}
+        },
+        "options": {}
+      },
+      "id": "sheets-1",
+      "name": "Append to Google Sheets",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [1120, 300],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "sheets-cred",
+          "name": "Google Sheets"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Every 15 Minutes": {
+      "main": [
+        [
+          { "node": "Read HN RSS", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Read HN RSS": {
+      "main": [
+        [
+          { "node": "Filter by Keywords", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Filter by Keywords": {
+      "main": [
+        [
+          { "node": "Has Matches?", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Has Matches?": {
+      "main": [
+        [
+          { "node": "Append to Google Sheets", "type": "main", "index": 0 }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "tags": [
+    { "name": "rss" },
+    { "name": "monitoring" },
+    { "name": "google-sheets" }
+  ]
+}
