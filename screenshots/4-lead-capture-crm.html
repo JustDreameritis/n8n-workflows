@@ -1,0 +1,382 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Lead Capture → CRM — n8n Canvas</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      background: #1a1a2e;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 24px 16px 40px;
+    }
+
+    .canvas-header {
+      width: 100%;
+      max-width: 1200px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 32px;
+    }
+
+    .canvas-header h1 {
+      color: #e0e0e0;
+      font-size: 18px;
+      font-weight: 600;
+      letter-spacing: 0.02em;
+    }
+
+    .badge {
+      background: #0f3460;
+      color: #4a9eff;
+      font-size: 11px;
+      padding: 3px 10px;
+      border-radius: 12px;
+      border: 1px solid #1e4d8a;
+      font-weight: 600;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+    }
+
+    .canvas {
+      width: 100%;
+      max-width: 1200px;
+      position: relative;
+    }
+
+    svg.arrows {
+      position: absolute;
+      top: 0; left: 0;
+      width: 100%; height: 100%;
+      pointer-events: none;
+      overflow: visible;
+    }
+
+    .row {
+      display: flex;
+      align-items: flex-start;
+      gap: 0;
+      margin-bottom: 0;
+    }
+
+    .row-main {
+      display: flex;
+      flex-direction: row;
+      align-items: center;
+      gap: 0;
+      flex-wrap: nowrap;
+      padding: 20px 0 16px;
+    }
+
+    .row-branch {
+      display: flex;
+      flex-direction: row;
+      align-items: flex-start;
+      padding: 8px 0 8px 0;
+      gap: 0;
+    }
+
+    .node {
+      position: relative;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      min-width: 120px;
+      max-width: 138px;
+    }
+
+    .node-box {
+      width: 110px;
+      border-radius: 10px;
+      padding: 12px 10px 10px;
+      text-align: center;
+      cursor: default;
+      transition: transform 0.15s;
+      border: 1.5px solid transparent;
+    }
+
+    .node-box:hover { transform: translateY(-2px); }
+
+    .node-icon {
+      font-size: 20px;
+      margin-bottom: 6px;
+      display: block;
+    }
+
+    .node-label {
+      font-size: 11px;
+      font-weight: 600;
+      line-height: 1.3;
+      word-break: break-word;
+    }
+
+    .node-sub {
+      font-size: 9.5px;
+      opacity: 0.7;
+      margin-top: 3px;
+      line-height: 1.3;
+    }
+
+    /* Node color themes */
+    .trigger   { background: #0d3320; border-color: #00d4aa !important; }
+    .trigger .node-label { color: #00d4aa; }
+    .trigger .node-sub   { color: #78c9b5; }
+
+    .logic     { background: #0d1f3c; border-color: #4a9eff !important; }
+    .logic .node-label { color: #4a9eff; }
+    .logic .node-sub   { color: #7ab8ff; }
+
+    .condition { background: #221a00; border-color: #ffd93d !important; }
+    .condition .node-label { color: #ffd93d; }
+    .condition .node-sub   { color: #ffe875; }
+
+    .output    { background: #2a1200; border-color: #ff9f43 !important; }
+    .output .node-label { color: #ff9f43; }
+    .output .node-sub   { color: #ffc07a; }
+
+    .error     { background: #2a0d12; border-color: #ff6b6b !important; }
+    .error .node-label { color: #ff6b6b; }
+    .error .node-sub   { color: #ff9999; }
+
+    .neutral   { background: #1e1e30; border-color: #555 !important; }
+    .neutral .node-label { color: #aaa; }
+    .neutral .node-sub   { color: #888; }
+
+    /* Connectors */
+    .connector {
+      flex: 1;
+      height: 2px;
+      background: linear-gradient(90deg, #333 0%, #4a9eff55 50%, #333 100%);
+      align-self: center;
+      position: relative;
+      min-width: 18px;
+    }
+
+    .connector::after {
+      content: '';
+      position: absolute;
+      right: -1px;
+      top: -4px;
+      width: 0;
+      height: 0;
+      border-top: 5px solid transparent;
+      border-bottom: 5px solid transparent;
+      border-left: 7px solid #4a9eff88;
+    }
+
+    .connector.branch-yes  { background: linear-gradient(90deg, #333, #00d4aa55, #333); }
+    .connector.branch-yes::after { border-left-color: #00d4aa88; }
+
+    .connector.branch-no   { background: linear-gradient(90deg, #333, #ff9f4355, #333); }
+    .connector.branch-no::after { border-left-color: #ff9f4388; }
+
+    .branch-label {
+      font-size: 9px;
+      font-weight: 700;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      position: absolute;
+      top: -14px;
+      left: 50%;
+      transform: translateX(-50%);
+      white-space: nowrap;
+    }
+
+    .label-yes { color: #00d4aa; }
+    .label-no  { color: #ff9f43; }
+    .label-dup { color: #ff6b6b; }
+
+    /* Layout helpers */
+    .flow-block {
+      display: flex;
+      flex-direction: column;
+      align-items: flex-start;
+      width: 100%;
+    }
+
+    .vline {
+      width: 2px;
+      background: linear-gradient(180deg, #4a9eff44, #4a9eff22);
+      margin-left: 55px;
+    }
+
+    .section-divider {
+      width: 100%;
+      border-top: 1px dashed #2a2a40;
+      margin: 16px 0;
+    }
+
+    .legend {
+      display: flex;
+      gap: 20px;
+      margin-top: 28px;
+      flex-wrap: wrap;
+      justify-content: center;
+    }
+
+    .legend-item {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      font-size: 11px;
+      color: #888;
+    }
+
+    .legend-dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 3px;
+    }
+  </style>
+</head>
+<body>
+
+<div class="canvas-header">
+  <h1>Lead Capture → CRM</h1>
+  <span class="badge">n8n Workflow</span>
+  <span class="badge" style="color:#00d4aa; border-color:#00d4aa44; background:#0d3320;">9 Nodes</span>
+</div>
+
+<div class="canvas" id="canvas">
+
+  <!-- MAIN HAPPY PATH -->
+  <div class="row-main">
+
+    <div class="node">
+      <div class="node-box trigger">
+        <span class="node-icon">🔌</span>
+        <div class="node-label">Webhook</div>
+        <div class="node-sub">POST /lead-capture</div>
+      </div>
+    </div>
+    <div class="connector"></div>
+
+    <div class="node">
+      <div class="node-box logic">
+        <span class="node-icon">🧹</span>
+        <div class="node-label">Validate &amp; Clean</div>
+        <div class="node-sub">Email regex, trim</div>
+      </div>
+    </div>
+    <div class="connector"></div>
+
+    <div class="node">
+      <div class="node-box logic">
+        <span class="node-icon">🔍</span>
+        <div class="node-label">Dedup Check</div>
+        <div class="node-sub">Airtable lookup</div>
+      </div>
+    </div>
+    <div class="connector"></div>
+
+    <div class="node">
+      <div class="node-box condition">
+        <span class="node-icon">❓</span>
+        <div class="node-label">New Lead?</div>
+        <div class="node-sub">IF records = 0</div>
+      </div>
+    </div>
+    <div class="connector branch-yes" style="position:relative;">
+      <span class="branch-label label-yes">YES</span>
+    </div>
+
+    <div class="node">
+      <div class="node-box output">
+        <span class="node-icon">📋</span>
+        <div class="node-label">Create CRM Entry</div>
+        <div class="node-sub">Airtable POST</div>
+      </div>
+    </div>
+    <div class="connector"></div>
+
+    <div class="node">
+      <div class="node-box output">
+        <span class="node-icon">📧</span>
+        <div class="node-label">Confirmation Email</div>
+        <div class="node-sub">SMTP send</div>
+      </div>
+    </div>
+    <div class="connector"></div>
+
+    <div class="node">
+      <div class="node-box output">
+        <span class="node-icon">💬</span>
+        <div class="node-label">Notify Sales</div>
+        <div class="node-sub">Telegram</div>
+      </div>
+    </div>
+    <div class="connector"></div>
+
+    <div class="node">
+      <div class="node-box neutral">
+        <span class="node-icon">✅</span>
+        <div class="node-label">Respond 200</div>
+        <div class="node-sub">JSON success</div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="section-divider"></div>
+
+  <!-- DUPLICATE BRANCH -->
+  <div style="display:flex; align-items:center; padding: 0 0 0 452px; gap:0;">
+    <div style="width:2px; height:24px; background:#ff9f4344; margin-right:0;"></div>
+  </div>
+  <div style="display:flex; align-items:center; padding: 0 0 12px 340px; gap:0;">
+    <div style="width:112px; height:2px; background:linear-gradient(90deg,#333,#ff9f4355,#333); position:relative;">
+      <span style="position:absolute; top:-13px; left:50%; transform:translateX(-50%); font-size:9px; font-weight:700; color:#ff9f43; white-space:nowrap;">NO — DUPLICATE</span>
+      <span style="position:absolute; right:-1px; top:-4px; width:0; height:0; border-top:5px solid transparent; border-bottom:5px solid transparent; border-left:7px solid #ff9f4388;"></span>
+    </div>
+    <div class="node" style="margin-left:0;">
+      <div class="node-box error">
+        <span class="node-icon">🚫</span>
+        <div class="node-label">Respond 409</div>
+        <div class="node-sub">Duplicate email</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="section-divider"></div>
+
+  <!-- ERROR PATH -->
+  <div style="display:flex; align-items:center; padding: 0 0 12px 80px; gap:0;">
+    <div style="font-size:10px; color:#ff6b6b; margin-right:12px; font-weight:700;">⚡ ERROR PATH</div>
+    <div style="width:2px; height:24px; background:#ff6b6b44;"></div>
+    <div style="width:40px; height:2px; background:linear-gradient(90deg,#ff6b6b44,#ff6b6b22);"></div>
+    <div class="node">
+      <div class="node-box error">
+        <span class="node-icon">☠️</span>
+        <div class="node-label">Dead Letter Queue</div>
+        <div class="node-sub">Log failure</div>
+      </div>
+    </div>
+    <div class="connector" style="background:linear-gradient(90deg,#ff6b6b22,#ff6b6b44,#ff6b6b22); min-width:18px;"></div>
+    <div class="node">
+      <div class="node-box neutral">
+        <span class="node-icon">📭</span>
+        <div class="node-label">No-Op Log</div>
+        <div class="node-sub">Terminal node</div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<div class="legend">
+  <div class="legend-item"><div class="legend-dot" style="background:#00d4aa;"></div>Trigger / Webhook</div>
+  <div class="legend-item"><div class="legend-dot" style="background:#4a9eff;"></div>Logic / Transform</div>
+  <div class="legend-item"><div class="legend-dot" style="background:#ffd93d;"></div>Condition / Branch</div>
+  <div class="legend-item"><div class="legend-dot" style="background:#ff9f43;"></div>Output / Integration</div>
+  <div class="legend-item"><div class="legend-dot" style="background:#ff6b6b;"></div>Error / Dead Letter</div>
+</div>
+
+</body>
+</html>

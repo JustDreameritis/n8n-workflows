@@ -1,0 +1,257 @@
+{
+  "name": "Lead Capture → CRM",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "lead-capture",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "wh-lead",
+      "name": "Webhook — Form Submission",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [160, 340],
+      "webhookId": "lead-capture"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Validate and clean incoming lead data\nconst items = $input.all();\nconst results = [];\nconst errors = [];\n\nfor (const item of items) {\n  const body = item.json.body || item.json;\n\n  // Trim all string fields\n  const name    = (body.name    || '').trim();\n  const email   = (body.email   || '').trim().toLowerCase();\n  const company = (body.company || '').trim();\n  const message = (body.message || '').trim();\n\n  // Validate required fields\n  if (!name)  { errors.push('Missing: name');  continue; }\n  if (!email) { errors.push('Missing: email'); continue; }\n\n  // Basic email format check\n  const emailRegex = /^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/;\n  if (!emailRegex.test(email)) {\n    errors.push(`Invalid email: ${email}`);\n    continue;\n  }\n\n  results.push({\n    json: {\n      name,\n      email,\n      company: company || 'Unknown',\n      message,\n      submittedAt: new Date().toISOString(),\n      source: body.source || 'website',\n      validationErrors: []\n    }\n  });\n}\n\nif (errors.length > 0 && results.length === 0) {\n  throw new Error('Validation failed: ' + errors.join(', '));\n}\n\nreturn results;"
+      },
+      "id": "code-validate",
+      "name": "Validate & Clean Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [380, 340]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=https://api.airtable.com/v0/{{ $env.AIRTABLE_BASE_ID }}/Leads?filterByFormula=LOWER(%7BEmail%7D)%3D%22{{ encodeURIComponent($json.email) }}%22&maxRecords=1",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "response": {
+            "response": {
+              "neverError": true
+            }
+          }
+        }
+      },
+      "id": "http-dedup-check",
+      "name": "Check Duplicate in Airtable",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [600, 340],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "airtable-token",
+          "name": "Airtable API Token"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "dedup-check",
+              "leftValue": "={{ $json.records.length }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-dedup",
+      "name": "Is New Lead?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [820, 340]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.airtable.com/v0/{{ $env.AIRTABLE_BASE_ID }}/Leads",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "contentType": "json",
+        "body": {
+          "records": [
+            {
+              "fields": {
+                "Name": "={{ $('Validate & Clean Data').item.json.name }}",
+                "Email": "={{ $('Validate & Clean Data').item.json.email }}",
+                "Company": "={{ $('Validate & Clean Data').item.json.company }}",
+                "Message": "={{ $('Validate & Clean Data').item.json.message }}",
+                "Source": "={{ $('Validate & Clean Data').item.json.source }}",
+                "Status": "New",
+                "Submitted At": "={{ $('Validate & Clean Data').item.json.submittedAt }}"
+              }
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "http-airtable-create",
+      "name": "Create CRM Entry (Airtable)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1040, 220],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "airtable-token",
+          "name": "Airtable API Token"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "fromEmail": "={{ $env.SMTP_FROM || 'noreply@yourdomain.com' }}",
+        "toEmail": "={{ $('Validate & Clean Data').item.json.email }}",
+        "subject": "Thanks for reaching out, {{ $('Validate & Clean Data').item.json.name }}!",
+        "emailType": "html",
+        "message": "=<html><body style=\"font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;\">\n<h2 style=\"color: #4a9eff;\">Thanks for getting in touch!</h2>\n<p>Hi {{ $('Validate & Clean Data').item.json.name }},</p>\n<p>We received your message and will get back to you within 1 business day.</p>\n<blockquote style=\"border-left: 3px solid #4a9eff; padding-left: 15px; color: #666;\">\n  {{ $('Validate & Clean Data').item.json.message }}\n</blockquote>\n<p>Best regards,<br/>The Team</p>\n</body></html>"
+      },
+      "id": "email-confirm",
+      "name": "Send Confirmation Email",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [1260, 220],
+      "credentials": {
+        "smtp": {
+          "id": "smtp-cred",
+          "name": "SMTP Account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "sendMessage",
+        "chatId": "={{ $env.TELEGRAM_SALES_CHAT_ID }}",
+        "text": "=🆕 <b>New Lead</b>\n\n👤 <b>{{ $('Validate & Clean Data').item.json.name }}</b>\n🏢 {{ $('Validate & Clean Data').item.json.company }}\n📧 {{ $('Validate & Clean Data').item.json.email }}\n🕐 {{ $('Validate & Clean Data').item.json.submittedAt }}\n\n💬 <i>{{ $('Validate & Clean Data').item.json.message }}</i>\n\n<a href=\"https://airtable.com/{{ $env.AIRTABLE_BASE_ID }}\">View in CRM →</a>",
+        "additionalFields": {
+          "parse_mode": "HTML"
+        }
+      },
+      "id": "telegram-sales",
+      "name": "Notify Sales Team",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [1480, 220],
+      "credentials": {
+        "telegramApi": {
+          "id": "telegram-cred",
+          "name": "Telegram Bot"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ status: 'received', message: 'Thanks for your submission. We will be in touch soon.' }) }}"
+      },
+      "id": "respond-ok",
+      "name": "Respond 200 OK",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [1700, 220]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseCode": 409,
+        "responseBody": "={{ JSON.stringify({ status: 'duplicate', message: 'This email is already in our system.' }) }}"
+      },
+      "id": "respond-dup",
+      "name": "Respond 409 Duplicate",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [1040, 460]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Dead-letter queue handler: log error details\nconst error = $input.first().json;\nreturn [{\n  json: {\n    failedAt: new Date().toISOString(),\n    workflowName: 'Lead Capture → CRM',\n    errorMessage: error.message || JSON.stringify(error),\n    originalData: error\n  }\n}];"
+      },
+      "id": "dlq-handler",
+      "name": "Dead Letter Queue",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [820, 560]
+    },
+    {
+      "parameters": {},
+      "id": "noop-dlq",
+      "name": "Log Error (No-Op)",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [1040, 560]
+    }
+  ],
+  "connections": {
+    "Webhook — Form Submission": {
+      "main": [
+        [{ "node": "Validate & Clean Data", "type": "main", "index": 0 }]
+      ]
+    },
+    "Validate & Clean Data": {
+      "main": [
+        [{ "node": "Check Duplicate in Airtable", "type": "main", "index": 0 }]
+      ]
+    },
+    "Check Duplicate in Airtable": {
+      "main": [
+        [{ "node": "Is New Lead?", "type": "main", "index": 0 }]
+      ]
+    },
+    "Is New Lead?": {
+      "main": [
+        [{ "node": "Create CRM Entry (Airtable)", "type": "main", "index": 0 }],
+        [{ "node": "Respond 409 Duplicate", "type": "main", "index": 0 }]
+      ]
+    },
+    "Create CRM Entry (Airtable)": {
+      "main": [
+        [{ "node": "Send Confirmation Email", "type": "main", "index": 0 }]
+      ]
+    },
+    "Send Confirmation Email": {
+      "main": [
+        [{ "node": "Notify Sales Team", "type": "main", "index": 0 }]
+      ]
+    },
+    "Notify Sales Team": {
+      "main": [
+        [{ "node": "Respond 200 OK", "type": "main", "index": 0 }]
+      ]
+    },
+    "Dead Letter Queue": {
+      "main": [
+        [{ "node": "Log Error (No-Op)", "type": "main", "index": 0 }]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "errorWorkflow": "dlq-handler"
+  },
+  "tags": [
+    { "name": "crm" },
+    { "name": "lead-capture" },
+    { "name": "airtable" },
+    { "name": "email" }
+  ],
+  "active": false
+}

@@ -1,0 +1,251 @@
+{
+  "name": "Email Attachment → Google Sheets Parser",
+  "nodes": [
+    {
+      "parameters": {
+        "host": "={{ $env.IMAP_HOST || 'imap.gmail.com' }}",
+        "port": 993,
+        "user": "={{ $env.IMAP_USER }}",
+        "password": "={{ $env.IMAP_PASSWORD }}",
+        "mailbox": "INBOX",
+        "format": "resolved",
+        "options": {
+          "allowUnauthorizedCerts": false,
+          "forceReconnect": 60
+        }
+      },
+      "id": "imap-trigger",
+      "name": "IMAP — Watch Inbox",
+      "type": "n8n-nodes-base.emailReadImap",
+      "typeVersion": 2,
+      "position": [160, 340],
+      "credentials": {
+        "imap": {
+          "id": "imap-cred",
+          "name": "IMAP Account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "has-attachments",
+              "leftValue": "={{ $json.attachments && $json.attachments.length > 0 }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-has-attachment",
+      "name": "Has Attachment?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [380, 340]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Extract first CSV or Excel attachment from email\nconst items = $input.all();\nconst results = [];\n\nfor (const item of items) {\n  const attachments = item.json.attachments || [];\n  \n  // Find the first CSV or Excel file\n  const supported = attachments.filter(a => {\n    const name = (a.filename || a.name || '').toLowerCase();\n    return name.endsWith('.csv') || name.endsWith('.xlsx') || name.endsWith('.xls');\n  });\n  \n  if (supported.length === 0) {\n    throw new Error('No supported attachment found (expected .csv, .xlsx, or .xls). Subject: ' + (item.json.subject || 'unknown'));\n  }\n  \n  const attachment = supported[0];\n  const filename = attachment.filename || attachment.name || 'attachment';\n  const fileType = filename.toLowerCase().endsWith('.csv') ? 'csv' : 'xlsx';\n  \n  results.push({\n    json: {\n      filename,\n      fileType,\n      emailSubject: item.json.subject || '',\n      emailFrom: item.json.from || '',\n      receivedAt: item.json.date || new Date().toISOString(),\n      attachmentContent: attachment.content,\n      mimeType: attachment.type || (fileType === 'csv' ? 'text/csv' : 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')\n    },\n    binary: {\n      data: {\n        data: attachment.content,\n        mimeType: attachment.type || 'text/csv',\n        fileName: filename\n      }\n    }\n  });\n}\n\nreturn results;"
+      },
+      "id": "code-extract",
+      "name": "Extract Attachment",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [600, 220]
+    },
+    {
+      "parameters": {
+        "operation": "fromFile",
+        "options": {
+          "headerRow": true,
+          "sheetName": "Sheet1"
+        }
+      },
+      "id": "spreadsheet-parse",
+      "name": "Parse Spreadsheet Rows",
+      "type": "n8n-nodes-base.spreadsheetFile",
+      "typeVersion": 2,
+      "position": [820, 220]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Validate and transform each row\nconst items = $input.all();\nconst valid = [];\nconst invalid = [];\n\nfor (const item of items) {\n  const row = item.json;\n  \n  // Skip completely empty rows\n  const values = Object.values(row).filter(v => v !== null && v !== undefined && v !== '');\n  if (values.length === 0) continue;\n  \n  // Normalize keys: lowercase, replace spaces with underscores\n  const normalizedRow = {};\n  for (const [key, value] of Object.entries(row)) {\n    const normalizedKey = key.toLowerCase().replace(/\\s+/g, '_').replace(/[^a-z0-9_]/g, '');\n    normalizedRow[normalizedKey] = typeof value === 'string' ? value.trim() : value;\n  }\n  \n  // Add metadata\n  normalizedRow._imported_at = new Date().toISOString();\n  normalizedRow._source_email = $('Extract Attachment').item.json.emailFrom;\n  normalizedRow._source_file = $('Extract Attachment').item.json.filename;\n  \n  valid.push({ json: normalizedRow });\n}\n\nif (valid.length === 0) {\n  throw new Error('File contained no valid rows after cleaning.');\n}\n\nreturn valid;"
+      },
+      "id": "code-transform",
+      "name": "Transform & Validate Rows",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1040, 220]
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "={{ $env.SHEETS_DOC_ID }}",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Imports",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {}
+        },
+        "options": {
+          "cellFormat": "USER_ENTERED",
+          "handlingExtraData": "insertInNewColumn"
+        }
+      },
+      "id": "sheets-append",
+      "name": "Append to Google Sheets",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.4,
+      "position": [1260, 220],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "gsheets-cred",
+          "name": "Google Sheets"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Build summary after all rows are appended\nconst allItems = $input.all();\nconst rowCount = allItems.length;\nconst sourceFile = $('Extract Attachment').item.json.filename;\nconst sourceEmail = $('Extract Attachment').item.json.emailFrom;\nconst subject = $('Extract Attachment').item.json.emailSubject;\n\nreturn [{\n  json: {\n    rowsImported: rowCount,\n    sourceFile,\n    sourceEmail,\n    subject,\n    completedAt: new Date().toISOString()\n  }\n}];"
+      },
+      "id": "code-summary",
+      "name": "Build Summary",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1480, 220]
+    },
+    {
+      "parameters": {
+        "operation": "sendMessage",
+        "chatId": "={{ $env.TELEGRAM_CHAT_ID }}",
+        "text": "=✅ <b>Attachment Import Complete</b>\n\n📁 <b>File:</b> {{ $json.sourceFile }}\n📧 <b>From:</b> {{ $json.sourceEmail }}\n📋 <b>Subject:</b> {{ $json.subject }}\n📊 <b>Rows imported:</b> {{ $json.rowsImported }}\n🕐 <b>Completed:</b> {{ $json.completedAt }}\n\n<a href=\"https://docs.google.com/spreadsheets/d/{{ $env.SHEETS_DOC_ID }}\">View Sheet →</a>",
+        "additionalFields": {
+          "parse_mode": "HTML"
+        }
+      },
+      "id": "telegram-summary",
+      "name": "Send Summary Notification",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [1700, 220],
+      "credentials": {
+        "telegramApi": {
+          "id": "telegram-cred",
+          "name": "Telegram Bot"
+        }
+      }
+    },
+    {
+      "parameters": {},
+      "id": "noop-skip",
+      "name": "Skip — No Attachment",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [600, 460]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Error handler: capture details for dead-letter queue\nconst error = $input.first().json;\nreturn [{\n  json: {\n    failedAt: new Date().toISOString(),\n    workflowName: 'Email Attachment → Google Sheets Parser',\n    errorMessage: error.message || JSON.stringify(error),\n    emailSubject: error.emailSubject || 'unknown'\n  }\n}];"
+      },
+      "id": "dlq-error",
+      "name": "Dead Letter Queue",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [820, 560]
+    },
+    {
+      "parameters": {
+        "operation": "sendMessage",
+        "chatId": "={{ $env.TELEGRAM_CHAT_ID }}",
+        "text": "=❌ <b>Import Failed</b>\n\n{{ $json.errorMessage }}\n\n<i>{{ $json.failedAt }}</i>",
+        "additionalFields": {
+          "parse_mode": "HTML"
+        }
+      },
+      "id": "telegram-error",
+      "name": "Alert on Error",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [1040, 560],
+      "credentials": {
+        "telegramApi": {
+          "id": "telegram-cred",
+          "name": "Telegram Bot"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "IMAP — Watch Inbox": {
+      "main": [
+        [{ "node": "Has Attachment?", "type": "main", "index": 0 }]
+      ]
+    },
+    "Has Attachment?": {
+      "main": [
+        [{ "node": "Extract Attachment", "type": "main", "index": 0 }],
+        [{ "node": "Skip — No Attachment", "type": "main", "index": 0 }]
+      ]
+    },
+    "Extract Attachment": {
+      "main": [
+        [{ "node": "Parse Spreadsheet Rows", "type": "main", "index": 0 }]
+      ]
+    },
+    "Parse Spreadsheet Rows": {
+      "main": [
+        [{ "node": "Transform & Validate Rows", "type": "main", "index": 0 }]
+      ]
+    },
+    "Transform & Validate Rows": {
+      "main": [
+        [{ "node": "Append to Google Sheets", "type": "main", "index": 0 }]
+      ]
+    },
+    "Append to Google Sheets": {
+      "main": [
+        [{ "node": "Build Summary", "type": "main", "index": 0 }]
+      ]
+    },
+    "Build Summary": {
+      "main": [
+        [{ "node": "Send Summary Notification", "type": "main", "index": 0 }]
+      ]
+    },
+    "Dead Letter Queue": {
+      "main": [
+        [{ "node": "Alert on Error", "type": "main", "index": 0 }]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "errorWorkflow": "dlq-error"
+  },
+  "tags": [
+    { "name": "email" },
+    { "name": "imap" },
+    { "name": "google-sheets" },
+    { "name": "csv-parser" }
+  ],
+  "active": false
+}

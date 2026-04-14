@@ -1,0 +1,438 @@
+{
+  "name": "Multi-Channel Alert Router",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "alert-router",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "wh-alert",
+      "name": "Webhook — Alert Ingress",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [160, 400],
+      "webhookId": "alert-router"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Normalize payload and apply rate-limit guard\nconst items = $input.all();\nconst results = [];\n\n// Simple in-memory rate limiter using static variable (resets on restart)\n// For production, replace with Redis or a database check\nif (!global.alertRateLimiter) {\n  global.alertRateLimiter = {};\n}\n\nconst now = Date.now();\nconst WINDOW_MS = 60 * 1000; // 1 minute window\nconst MAX_PER_SOURCE = 5;     // max 5 alerts per source per minute\n\nfor (const item of items) {\n  const body = item.json.body || item.json;\n\n  const source   = (body.source   || 'unknown').trim();\n  const severity = (body.severity || 'info').trim().toLowerCase();\n  const message  = (body.message  || '').trim();\n  const metadata = body.metadata  || {};\n\n  if (!message) throw new Error('Alert payload missing required field: message');\n\n  // Rate-limit check per source\n  const key = source;\n  if (!global.alertRateLimiter[key]) {\n    global.alertRateLimiter[key] = [];\n  }\n  // Purge old timestamps\n  global.alertRateLimiter[key] = global.alertRateLimiter[key].filter(t => now - t < WINDOW_MS);\n\n  if (global.alertRateLimiter[key].length >= MAX_PER_SOURCE) {\n    // Rate limited — silently drop and log\n    results.push({\n      json: {\n        rateLimited: true,\n        source,\n        severity,\n        droppedAt: new Date(now).toISOString()\n      }\n    });\n    continue;\n  }\n\n  global.alertRateLimiter[key].push(now);\n\n  // Build normalized alert\n  const severityLabel = {\n    critical: '🔴 CRITICAL',\n    warning:  '🟡 WARNING',\n    info:     '🔵 INFO'\n  }[severity] || '⚪ UNKNOWN';\n\n  results.push({\n    json: {\n      rateLimited: false,\n      source,\n      severity,\n      severityLabel,\n      message,\n      metadata,\n      alertId: `${source}-${now}`,\n      timestamp: new Date(now).toISOString()\n    }\n  });\n}\n\nreturn results;"
+      },
+      "id": "code-normalize",
+      "name": "Normalize & Rate-Limit",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [380, 400]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "not-rate-limited",
+              "leftValue": "={{ $json.rateLimited }}",
+              "rightValue": false,
+              "operator": {
+                "type": "boolean",
+                "operation": "false"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-rate-limit",
+      "name": "Rate Limited?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [600, 400]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": { "caseSensitive": false, "leftValue": "", "typeValidation": "loose" },
+                "conditions": [
+                  {
+                    "id": "sw-critical",
+                    "leftValue": "={{ $json.severity }}",
+                    "rightValue": "critical",
+                    "operator": { "type": "string", "operation": "equals" }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "critical"
+            },
+            {
+              "conditions": {
+                "options": { "caseSensitive": false, "leftValue": "", "typeValidation": "loose" },
+                "conditions": [
+                  {
+                    "id": "sw-warning",
+                    "leftValue": "={{ $json.severity }}",
+                    "rightValue": "warning",
+                    "operator": { "type": "string", "operation": "equals" }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "warning"
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "extra"
+        }
+      },
+      "id": "sw-severity",
+      "name": "Route by Severity",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [820, 280]
+    },
+    {
+      "parameters": {
+        "operation": "sendMessage",
+        "chatId": "={{ $env.TELEGRAM_ALERT_CHAT_ID }}",
+        "text": "=🔴 <b>CRITICAL ALERT</b>\n\n<b>Source:</b> {{ $json.source }}\n<b>Alert ID:</b> <code>{{ $json.alertId }}</code>\n<b>Time:</b> {{ $json.timestamp }}\n\n{{ $json.message }}\n\n<pre>{{ JSON.stringify($json.metadata, null, 2) }}</pre>",
+        "additionalFields": {
+          "parse_mode": "HTML"
+        }
+      },
+      "id": "tg-critical",
+      "name": "Telegram — Critical",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [1040, 100],
+      "credentials": {
+        "telegramApi": {
+          "id": "telegram-cred",
+          "name": "Telegram Bot"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "authentication": "oAuth2",
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "value": "={{ $env.SLACK_CRITICAL_CHANNEL || 'C_CRITICAL' }}",
+          "mode": "id"
+        },
+        "text": "=:red_circle: *CRITICAL* — `{{ $json.source }}`\n>{{ $json.message }}\n_Alert ID: {{ $json.alertId }} | {{ $json.timestamp }}_",
+        "otherOptions": {
+          "mrkdwn": true
+        }
+      },
+      "id": "slack-critical",
+      "name": "Slack — Critical",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [1040, 240],
+      "credentials": {
+        "slackOAuth2Api": {
+          "id": "slack-cred",
+          "name": "Slack"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "fromEmail": "={{ $env.SMTP_FROM }}",
+        "toEmail": "={{ $env.OPS_EMAIL }}",
+        "subject": "=[CRITICAL] {{ $json.source }}: {{ $json.message.substring(0, 60) }}",
+        "emailType": "html",
+        "message": "=<html><body style=\"font-family: monospace; background: #1a1a2e; color: #e0e0e0; padding: 20px;\">\n<h2 style=\"color: #ff4444;\">CRITICAL ALERT</h2>\n<table style=\"border-collapse: collapse; width: 100%;\">\n  <tr><td style=\"padding: 8px; border: 1px solid #333;\"><b>Source</b></td><td style=\"padding: 8px; border: 1px solid #333;\">{{ $json.source }}</td></tr>\n  <tr><td style=\"padding: 8px; border: 1px solid #333;\"><b>Alert ID</b></td><td style=\"padding: 8px; border: 1px solid #333;\">{{ $json.alertId }}</td></tr>\n  <tr><td style=\"padding: 8px; border: 1px solid #333;\"><b>Time</b></td><td style=\"padding: 8px; border: 1px solid #333;\">{{ $json.timestamp }}</td></tr>\n  <tr><td style=\"padding: 8px; border: 1px solid #333;\"><b>Message</b></td><td style=\"padding: 8px; border: 1px solid #333;\">{{ $json.message }}</td></tr>\n</table>\n<pre style=\"background: #0f1628; padding: 15px; margin-top: 20px;\">{{ JSON.stringify($json.metadata, null, 2) }}</pre>\n</body></html>"
+      },
+      "id": "email-critical",
+      "name": "Email — Critical",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [1040, 380],
+      "credentials": {
+        "smtp": {
+          "id": "smtp-cred",
+          "name": "SMTP Account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "sendMessage",
+        "chatId": "={{ $env.TELEGRAM_ALERT_CHAT_ID }}",
+        "text": "=🟡 <b>WARNING</b>\n\n<b>Source:</b> {{ $json.source }}\n<b>Alert ID:</b> <code>{{ $json.alertId }}</code>\n<b>Time:</b> {{ $json.timestamp }}\n\n{{ $json.message }}",
+        "additionalFields": {
+          "parse_mode": "HTML"
+        }
+      },
+      "id": "tg-warning",
+      "name": "Telegram — Warning",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [1040, 540],
+      "credentials": {
+        "telegramApi": {
+          "id": "telegram-cred",
+          "name": "Telegram Bot"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "authentication": "oAuth2",
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "value": "={{ $env.SLACK_ALERTS_CHANNEL || 'C_ALERTS' }}",
+          "mode": "id"
+        },
+        "text": "=:warning: *WARNING* — `{{ $json.source }}`\n>{{ $json.message }}\n_Alert ID: {{ $json.alertId }} | {{ $json.timestamp }}_",
+        "otherOptions": {
+          "mrkdwn": true
+        }
+      },
+      "id": "slack-warning",
+      "name": "Slack — Warning",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [1040, 680],
+      "credentials": {
+        "slackOAuth2Api": {
+          "id": "slack-cred",
+          "name": "Slack"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "authentication": "oAuth2",
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "value": "={{ $env.SLACK_INFO_CHANNEL || 'C_GENERAL' }}",
+          "mode": "id"
+        },
+        "text": "=:large_blue_circle: *INFO* — `{{ $json.source }}`\n>{{ $json.message }}\n_{{ $json.timestamp }}_",
+        "otherOptions": {
+          "mrkdwn": true
+        }
+      },
+      "id": "slack-info",
+      "name": "Slack — Info",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [1040, 820],
+      "credentials": {
+        "slackOAuth2Api": {
+          "id": "slack-cred",
+          "name": "Slack"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "passThrough",
+        "output": "input1"
+      },
+      "id": "merge-critical",
+      "name": "Merge Critical Outputs",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [1260, 240]
+    },
+    {
+      "parameters": {
+        "mode": "passThrough",
+        "output": "input1"
+      },
+      "id": "merge-warning",
+      "name": "Merge Warning Outputs",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [1260, 610]
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "combinationMode": "mergeByPosition",
+        "options": {}
+      },
+      "id": "merge-all",
+      "name": "Merge All Channels",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [1480, 500]
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "={{ $env.AUDIT_SHEETS_DOC_ID }}",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Alert Log",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Alert ID": "={{ $json.alertId }}",
+            "Timestamp": "={{ $json.timestamp }}",
+            "Source": "={{ $json.source }}",
+            "Severity": "={{ $json.severity }}",
+            "Message": "={{ $json.message }}",
+            "Metadata": "={{ JSON.stringify($json.metadata) }}"
+          }
+        },
+        "options": {
+          "cellFormat": "USER_ENTERED"
+        }
+      },
+      "id": "sheets-audit",
+      "name": "Audit Log → Google Sheets",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.4,
+      "position": [1700, 500],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "gsheets-cred",
+          "name": "Google Sheets"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ status: 'routed', alertId: $json.alertId, severity: $json.severity }) }}"
+      },
+      "id": "respond-routed",
+      "name": "Respond — Routed",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [1920, 500]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseCode": 429,
+        "responseBody": "={{ JSON.stringify({ status: 'rate_limited', message: 'Too many alerts from this source. Try again in 60 seconds.' }) }}"
+      },
+      "id": "respond-limited",
+      "name": "Respond 429 Rate Limited",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [820, 540]
+    }
+  ],
+  "connections": {
+    "Webhook — Alert Ingress": {
+      "main": [
+        [{ "node": "Normalize & Rate-Limit", "type": "main", "index": 0 }]
+      ]
+    },
+    "Normalize & Rate-Limit": {
+      "main": [
+        [{ "node": "Rate Limited?", "type": "main", "index": 0 }]
+      ]
+    },
+    "Rate Limited?": {
+      "main": [
+        [{ "node": "Route by Severity", "type": "main", "index": 0 }],
+        [{ "node": "Respond 429 Rate Limited", "type": "main", "index": 0 }]
+      ]
+    },
+    "Route by Severity": {
+      "main": [
+        [
+          { "node": "Telegram — Critical", "type": "main", "index": 0 },
+          { "node": "Slack — Critical", "type": "main", "index": 0 },
+          { "node": "Email — Critical", "type": "main", "index": 0 }
+        ],
+        [
+          { "node": "Telegram — Warning", "type": "main", "index": 0 },
+          { "node": "Slack — Warning", "type": "main", "index": 0 }
+        ],
+        [
+          { "node": "Slack — Info", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Telegram — Critical": {
+      "main": [
+        [{ "node": "Merge Critical Outputs", "type": "main", "index": 0 }]
+      ]
+    },
+    "Slack — Critical": {
+      "main": [
+        [{ "node": "Merge Critical Outputs", "type": "main", "index": 1 }]
+      ]
+    },
+    "Email — Critical": {
+      "main": [
+        [{ "node": "Merge All Channels", "type": "main", "index": 0 }]
+      ]
+    },
+    "Telegram — Warning": {
+      "main": [
+        [{ "node": "Merge Warning Outputs", "type": "main", "index": 0 }]
+      ]
+    },
+    "Slack — Warning": {
+      "main": [
+        [{ "node": "Merge Warning Outputs", "type": "main", "index": 1 }]
+      ]
+    },
+    "Merge Critical Outputs": {
+      "main": [
+        [{ "node": "Merge All Channels", "type": "main", "index": 1 }]
+      ]
+    },
+    "Merge Warning Outputs": {
+      "main": [
+        [{ "node": "Merge All Channels", "type": "main", "index": 2 }]
+      ]
+    },
+    "Slack — Info": {
+      "main": [
+        [{ "node": "Merge All Channels", "type": "main", "index": 3 }]
+      ]
+    },
+    "Merge All Channels": {
+      "main": [
+        [{ "node": "Audit Log → Google Sheets", "type": "main", "index": 0 }]
+      ]
+    },
+    "Audit Log → Google Sheets": {
+      "main": [
+        [{ "node": "Respond — Routed", "type": "main", "index": 0 }]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "tags": [
+    { "name": "alerting" },
+    { "name": "multi-channel" },
+    { "name": "slack" },
+    { "name": "telegram" },
+    { "name": "rate-limiter" }
+  ],
+  "active": false
+}
